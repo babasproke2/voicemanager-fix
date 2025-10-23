@@ -14,20 +14,38 @@
 
 int g_iSelection[MAXPLAYERS+1] = {0};
 int g_iCookieSelection[MAXPLAYERS+1] = {-1};
-char g_sVolumeLevels[][] = { "<<", "<", ">", ">>" };
+char g_sVolumeLevels[4][3] = { "<<", "<", ">", ">>" };
+
+#define VOLUME_LEVEL_COUNT 4
 
 char g_sDriver[64];
 
 // Cvars
-ConVar g_Cvar_VoiceEnable;
 ConVar g_Cvar_Database;
-ConVar g_Cvar_AllowSelfOverride;
 
 // Cookies
 Handle g_Cookie_GlobalOverride;
 
 // Handles
 Handle g_hDatabase;
+
+static bool IsValidVolumeIndex(int level)
+{
+    return level >= 0 && level < VOLUME_LEVEL_COUNT;
+}
+
+static void ResetClientGlobalOverride(int client)
+{
+    g_iCookieSelection[client] = -1;
+    OnPlayerGlobalAdjust(client, -1);
+
+    if (AreClientCookiesCached(client))
+    {
+        SetClientCookie(client, g_Cookie_GlobalOverride, "");
+    }
+
+    LogMessage("[VoiceManager] Reset invalid global volume selection for %N.", client);
+}
 
 public Extension __ext_voicemanager =
 {
@@ -47,15 +65,13 @@ public Plugin myinfo =
 
 public void OnPluginStart()
 {
-    g_Cvar_VoiceEnable = FindConVar("vm_enable");
     g_Cvar_Database = CreateConVar("vm_database", "default", "Database configuration to use from databases.cfg");
-    g_Cvar_AllowSelfOverride = CreateConVar("vm_allow_self", "0", "Allow players to override their own volume (recommended only for testing)");
 
     RegConsoleCmd("sm_vm", CommandBaseMenu);
+    RegConsoleCmd("sm_v", CommandBaseMenu);
+    RegConsoleCmd("sm_voice", CommandBaseMenu);
     RegConsoleCmd("sm_voicemanager", CommandBaseMenu);
     RegConsoleCmd("sm_vmclear", Command_ClearClientOverrides);
-
-    HookConVarChange(g_Cvar_VoiceEnable, OnVoiceEnableChanged);
 
     g_Cookie_GlobalOverride = RegClientCookie("voicemanager_cookie", "VM Global Toggle", CookieAccess_Public);
 
@@ -111,18 +127,8 @@ public void T_InitDatabase(Handle owner, Handle hndl, const char[] error, any da
     }
 }
 
-public void OnVoiceEnableChanged(ConVar convar, const char[] oldValue, const char[] newValue)
-{
-    RefreshActiveOverrides();
-}
-
 public void OnClientPostAdminCheck(int client)
 {
-    if (!g_Cvar_VoiceEnable.BoolValue || !IsValidClient(client))
-    {
-        return;
-    }
-
     char szSteamID[STEAM_ID_BUF_SIZE];
     GetClientAuthId(client, AuthId_SteamID64, szSteamID, sizeof(szSteamID));
 
@@ -166,38 +172,38 @@ public void OnClientCookiesCached(int client)
     if (sCookieValue[0] != '\0')
     {
         int cookieValue = StringToInt(sCookieValue);
-        g_iCookieSelection[client] = cookieValue;
-        OnPlayerGlobalAdjust(client, cookieValue);
+        if (IsValidVolumeIndex(cookieValue))
+        {
+            g_iCookieSelection[client] = cookieValue;
+            OnPlayerGlobalAdjust(client, cookieValue);
+        }
+        else
+        {
+            ResetClientGlobalOverride(client);
+        }
     }
     else
     {
         g_iCookieSelection[client] = -1;
+        OnPlayerGlobalAdjust(client, -1);
     }
 }
 
 public void OnClientDisconnect(int client)
 {
-    if (g_Cvar_VoiceEnable.BoolValue)
-    {
-        RefreshActiveOverrides();
-    }
+    RefreshActiveOverrides();
 }
 
 // Menus
 public Action CommandBaseMenu(int client, int args)
 {
-    if (!g_Cvar_VoiceEnable.BoolValue)
-    {
-        return Plugin_Handled;
-    }
-
     char playerBuffer[32];
     char stringBuffer[32];
     int playersAdjusted = 0;
 
     for (int otherClient = 1; otherClient <= MaxClients; otherClient++)
     {
-        if (IsValidClient(otherClient) && (g_Cvar_AllowSelfOverride.BoolValue || otherClient != client) && !IsFakeClient(otherClient) && GetClientOverride(client, otherClient) >= 0)
+        if (IsValidClient(otherClient) && !IsFakeClient(otherClient) && GetClientOverride(client, otherClient) >= 0)
         {
             playersAdjusted++;
         }
@@ -205,12 +211,18 @@ public Action CommandBaseMenu(int client, int args)
 
     Format(playerBuffer, sizeof(playerBuffer), "Player Adjustment (%i active)", playersAdjusted);
 
-    if (g_iCookieSelection[client] >= 0)
+    int cookieSelection = g_iCookieSelection[client];
+    if (IsValidVolumeIndex(cookieSelection))
     {
-        Format(stringBuffer, sizeof(stringBuffer), "Global Adjustment (%s)", g_sVolumeLevels[g_iCookieSelection[client]]);
+        Format(stringBuffer, sizeof(stringBuffer), "Global Adjustment (%s)", g_sVolumeLevels[cookieSelection]);
     }
     else
     {
+        if (cookieSelection != -1)
+        {
+            ResetClientGlobalOverride(client);
+        }
+
         Format(stringBuffer, sizeof(stringBuffer), "Global Adjustment");
     }
 
@@ -221,7 +233,6 @@ public Action CommandBaseMenu(int client, int args)
     menu.AddItem("clear", "Clear Player Adjustments");
     menu.ExitButton = true;
     menu.Display(client, 20);
-
     return Plugin_Handled;
 }
 
@@ -244,16 +255,21 @@ public int BaseMenuHandler(Menu menu, MenuAction action, int client, int param2)
 
                 for (int otherClient = 1; otherClient <= MaxClients; otherClient++)
                 {
-                    if (IsValidClient(otherClient) && (g_Cvar_AllowSelfOverride.BoolValue || otherClient != client) && !IsFakeClient(otherClient))
+                    if (IsValidClient(otherClient) && !IsFakeClient(otherClient))
                     {
                         int override = GetClientOverride(client, otherClient);
 
-                        if (override >= 0)
+                        if (IsValidVolumeIndex(override))
                         {
                             Format(name, sizeof(name), "%N (%s)", otherClient, g_sVolumeLevels[override]);
                         }
                         else
                         {
+                            if (override > -1)
+                            {
+                                LogMessage("[VoiceManager] Ignoring invalid override level %d for %N -> %N.", override, client, otherClient);
+                            }
+
                             Format(name, sizeof(name), "%N", otherClient);
                         }
                         IntToString(otherClient, id, sizeof(id));
@@ -316,11 +332,6 @@ public int BaseMenuHandler(Menu menu, MenuAction action, int client, int param2)
 
 public Action Command_ClearClientOverrides(int client, int args)
 {
-    if (!g_Cvar_VoiceEnable.BoolValue)
-    {
-        return Plugin_Handled;
-    }
-
     char szSteamID[STEAM_ID_BUF_SIZE];
     GetClientAuthId(client, AuthId_SteamID64, szSteamID, sizeof(szSteamID));
 
@@ -534,4 +545,3 @@ stock bool IsValidClient(int client)
 
     return true;
 }
-
