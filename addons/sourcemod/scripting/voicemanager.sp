@@ -5,7 +5,7 @@
 #include <sdktools>
 #include <clientprefs>
 
-#define PLUGIN_VERSION "1.0.3"
+#define PLUGIN_VERSION "1.0.4"
 #define VOICE_MANAGER_PREFIX "{green}[VOICE MANAGER]{default}"
 #define TABLE_NAME "voicemanager"
 #define STEAM_ID_BUF_SIZE 18
@@ -14,7 +14,7 @@
 
 int g_iSelection[MAXPLAYERS+1] = {0};
 int g_iCookieSelection[MAXPLAYERS+1] = {-1};
-char g_sVolumeLevels[4][2] = { "<<", "<", ">", ">>" };
+char g_sVolumeLevels[][] = { "<<", "<", ">", ">>" };
 
 char g_sDriver[64];
 
@@ -534,3 +534,4 @@ stock bool IsValidClient(int client)
 
     return true;
 }
+
